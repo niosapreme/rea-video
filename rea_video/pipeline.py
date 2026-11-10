@@ -64,9 +64,13 @@ def vlm_units(records: list[dict], max_calls: int) -> list[list[dict]]:
 def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, whole_vlm: bool = True,
               ocr: bool = True, workers: int = 3, engine: str = "seedance2.0", max_shots_vlm: int = 60,
               platform_meta: dict | None = None, stems: bool = True, memory: bool = True, packaging: bool = True,
-              lang: str = "zh", force: bool = False) -> dict:
+              lang: str = "zh", force: bool = False, vlm_config: VLMConfig | None = None) -> dict:
     lang = set_lang(lang)
     require_tools()
+    cfg = (vlm_config if vlm_config is not None else VLMConfig.from_env()) if use_vlm else None
+    if cfg:
+        cfg.validate()
+        LOG.info("VLM authorized: endpoint=%s media=%s request_budget=%d", cfg.describe(), cfg.media, cfg.max_requests)
     t0 = time.time()
     video = Path(video).expanduser().resolve()
     out = Path(out_dir).expanduser().resolve()
@@ -198,7 +202,6 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
     vlm_info = {"used": False, "requested": use_vlm, "status": "off"}
     whole = None
     if use_vlm:
-        cfg = VLMConfig.from_env()
         if cfg is None:
             LOG.warning("--vlm requested but no VLM config found (REA_VLM_* / VIDEO_ANALYSIS_* / GEMINI3_*); continuing without it")
             vlm_info = {"used": False, "requested": True, "status": "not_configured", "error": "no_config"}
@@ -258,7 +261,9 @@ def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, 
                     vlm_info["errors"].append(f"whole: {str(exc)[:160]}")
             asked = [r for u in units for r in u]
             ok_shots = sum(1 for r in asked if r.get("vlm"))
-            vlm_info.update(ok_shots=ok_shots, asked_shots=len(asked), calls=len(units), whole_ok=whole is not None)
+            vlm_info.update(ok_shots=ok_shots, asked_shots=len(asked), calls=len(units), whole_ok=whole is not None,
+                            attempted_requests=client.attempted, successful_requests=client.successful,
+                            failed_requests=client.failed, request_budget=cfg.max_requests, endpoint_host=cfg.describe().split(' @ ')[-1])
             if ok_shots == len(asked) and (whole is not None or not whole_vlm):
                 vlm_info.update(used=True, status="ok")
             elif ok_shots or whole is not None:
