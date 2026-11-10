@@ -20,7 +20,13 @@ from .util import LOG, read_json
 
 
 def _ff(args: list[str], cwd: Path | None = None) -> None:
-    subprocess.run(["ffmpeg", "-v", "error", "-y", *args], check=True, cwd=cwd)
+    from .output_safety import staged_media
+    destination = Path(args[-1])
+    if cwd and not destination.is_absolute():
+        destination = cwd / destination
+    with staged_media(destination) as temporary:
+        staged_arg = temporary.name if cwd and not Path(args[-1]).is_absolute() else str(temporary)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", *args[:-1], staged_arg], check=True, cwd=cwd)
 
 
 def render_still_motion(image: Path, out: Path, duration: float, size: tuple[int, int], fps: float,
@@ -38,21 +44,24 @@ def render_still_motion(image: Path, out: Path, duration: float, size: tuple[int
     vx = math.cos(math.radians(pan_dir_deg)) * pan_px_per_s * px_scale
     vy = math.sin(math.radians(pan_dir_deg)) * pan_px_per_s * px_scale
     out.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps}",
-                             "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(out)], stdin=subprocess.PIPE)
-    assert proc.stdin is not None
-    # the measured motion maps frame t -> t+1; start slightly zoomed in when zooming out so edges never show
-    base = 1.0 + max(0.0, -zoom_per_s * duration) + 0.02 + (abs(vx) + abs(vy)) * duration / max(w, h)
-    for i in range(n):
-        t = i / fps
-        s = base * (1.0 + zoom_per_s * t)
-        M = cv2.getRotationMatrix2D((w / 2, h / 2), 0, s)
-        M[0, 2] += vx * t - vx * duration / 2
-        M[1, 2] += vy * t - vy * duration / 2
-        frame = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT)
-        proc.stdin.write(frame.tobytes())
-    proc.stdin.close()
-    proc.wait()
+    from .output_safety import staged_media
+    with staged_media(out) as temporary:
+        proc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps}",
+                                 "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(temporary)], stdin=subprocess.PIPE)
+        assert proc.stdin is not None
+        # the measured motion maps frame t -> t+1; start slightly zoomed in when zooming out so edges never show
+        base = 1.0 + max(0.0, -zoom_per_s * duration) + 0.02 + (abs(vx) + abs(vy)) * duration / max(w, h)
+        for i in range(n):
+            t = i / fps
+            s = base * (1.0 + zoom_per_s * t)
+            M = cv2.getRotationMatrix2D((w / 2, h / 2), 0, s)
+            M[0, 2] += vx * t - vx * duration / 2
+            M[1, 2] += vy * t - vy * duration / 2
+            frame = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT)
+            proc.stdin.write(frame.tobytes())
+        proc.stdin.close()
+        if proc.wait() != 0:
+            raise subprocess.CalledProcessError(proc.returncode, "ffmpeg")
     return out
 
 
@@ -134,13 +143,18 @@ def overlay_cues(b: dict, spans: list[tuple[float, float]]) -> tuple[list[dict],
     return cues, stickers
 
 
-def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = None, overlays: bool = False) -> str:
+def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = None, overlays: bool = False, force: bool = False) -> str:
     b = read_json(breakdown_path)
     bdir = breakdown_path.parent
     jobs_path = results_path.with_name("jobs.json")
     jobs = {j["shot"]: j for j in read_json(jobs_path)["jobs"]} if jobs_path.is_file() else {}
     results = read_json(results_path).get("results", {}) if results_path.is_file() else {}
     out_dir = out_dir or results_path.parent
+    from .output_safety import preflight, preflight_tree
+    if out_dir.is_symlink():
+        raise ValueError(f"output directory is a symlink: {out_dir}")
+    preflight([out_dir / "assemble_log.json", out_dir / "remake_silent.mp4", out_dir / "remake.mp4", out_dir / "compare.mp4"], force=force)
+    preflight_tree(out_dir / "segments", force=force, marker="concat.txt")
     seg_dir = out_dir / "segments"
     seg_dir.mkdir(parents=True, exist_ok=True)
     src = Path(b["source"]["path"])
@@ -169,7 +183,8 @@ def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = No
             legend.append((sh["index"], "original"))
         parts.append(seg)
     lst = seg_dir / "concat.txt"
-    lst.write_text("".join("file '" + str(p.resolve()).replace("'", "'\\''") + "'\n" for p in parts), encoding="utf-8")
+    from .output_safety import atomic_text
+    atomic_text(lst, "".join("file '" + str(p.resolve()).replace("'", "'\\''") + "'\n" for p in parts))
     silent = out_dir / "remake_silent.mp4"
     _ff(["-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(silent)])
     overlay_log: dict = {}
@@ -179,7 +194,7 @@ def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = No
         cues, stickers = overlay_cues(b, replaced_spans(b, legend))
         overlay_log = {"text": len(cues), "stickers_to_add": stickers}
         if cues:
-            (out_dir / "overlays_remake.ass").write_text(to_ass(cues, w, h), encoding="utf-8")
+            atomic_text(out_dir / "overlays_remake.ass", to_ass(cues, w, h))
             try:  # relative name + cwd: no filter-string escaping of the path
                 _ff(["-i", silent.name, "-vf", "ass=overlays_remake.ass", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
                      "remake_overlaid.mp4"], cwd=out_dir)
@@ -207,6 +222,6 @@ def assemble(breakdown_path: Path, results_path: Path, out_dir: Path | None = No
             if not with_text:
                 raise
     log = {"legend": legend, "remake": str(final), "compare": str(compare), **({"overlays": overlay_log} if overlays else {})}
-    (out_dir / "assemble_log.json").write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_text(out_dir / "assemble_log.json", json.dumps(log, ensure_ascii=False, indent=2))
     LOG.info("remake -> %s ; compare -> %s", final, compare)
     return json.dumps(log, ensure_ascii=False)

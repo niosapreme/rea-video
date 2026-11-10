@@ -23,7 +23,8 @@ def write_json(path: Path, data: Any, compact: bool = False) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = (json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=_json_default) if compact
             else json.dumps(data, ensure_ascii=False, indent=2, default=_json_default))
-    path.write_text(text + "\n", encoding="utf-8")
+    from .output_safety import atomic_text
+    atomic_text(path, text + "\n")
     return path
 
 

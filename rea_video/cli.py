@@ -61,7 +61,7 @@ def cmd_decompose(args) -> int:
         raise SystemExit(f"错误：不支持的报告语言 {lang}（可选：{', '.join(LANGS)}）")
     b = decompose(args.video, out, use_vlm=use_vlm, whole_vlm=not args.no_whole, ocr=not args.no_ocr,
                   workers=args.workers, engine=args.engine or pref("engine", "seedance2.0"), platform_meta=meta, stems=stems,
-                  packaging=not args.no_packaging, lang=lang)
+                  packaging=not args.no_packaging, lang=lang, force=args.force)
     print(json.dumps({"out": str(out), "verdict": b["summary"]["verdict"], "shots": b["summary"]["shots"],
                       "confidence": b["summary"]["confidence"], "vlm": b["summary"]["vlm"],
                       "report": str(out / "report.html")}, ensure_ascii=False, indent=2))
@@ -75,13 +75,16 @@ def cmd_review(args) -> int:
     out = Path(args.out_dir)
     b = read_json(out / "breakdown.json")
     set_lang(b.get("lang", "zh"))
+    from .output_safety import preflight
+    preflight([out / "review_tasks.json"], force=args.force)
     tasks, answers = build_tasks(b, str(out))
     from .util import dumps_rows
 
-    (out / "review_tasks.json").write_text(dumps_rows(tasks), encoding="utf-8")
+    from .output_safety import atomic_text
+    atomic_text(out / "review_tasks.json", dumps_rows(tasks))
     ans_path = out / "review_answers.json"
     if args.force or not ans_path.is_file():
-        ans_path.write_text(dumps_rows(answers), encoding="utf-8")
+        atomic_text(ans_path, dumps_rows(answers))
     high = [s for s in tasks["shots"] if s["priority"] == "high"]
     print(f"{len(tasks['shots'])} 个镜头待看图复核，其中 {len(high)} 个优先：" + ", ".join(f"{s['id']}({'; '.join(s['why'])})" for s in high))
     print(f"说明和图片路径：{out / 'review_tasks.json'}")
@@ -93,6 +96,8 @@ def cmd_review(args) -> int:
 def cmd_apply_review(args) -> int:
     from .pipeline import finalize
     from .review import apply_answers
+    from .output_safety import preflight
+    preflight([Path(args.out_dir) / n for n in ("breakdown.json", "report.md", "report.html")], force=True)
 
     out = Path(args.out_dir)
     b = read_json(out / "breakdown.json")
@@ -123,6 +128,8 @@ def cmd_stems(args) -> int:
     from .stems import extract_stems
 
     out = Path(args.out) if args.out else Path("out") / Path(args.video).stem
+    from .output_safety import preflight_tree
+    preflight_tree(out, force=args.force, marker="stems/original.wav")
     print(json.dumps(extract_stems(args.video, out), ensure_ascii=False, indent=2))
     return 0
 
@@ -144,8 +151,9 @@ def cmd_eval(args) -> int:
 
     _ocr_lang(args)
 
+    from .output_safety import preflight_tree
     res = evaluate(Path(args.labels), Path(args.out), use_vlm=args.vlm, ocr=not args.no_ocr, reuse=not args.fresh,
-                   only=set(args.only.split(",")) if args.only else None, stems=args.stems)
+                   only=set(args.only.split(",")) if args.only else None, stems=args.stems, force=args.force)
     print(json.dumps(res["summary"], ensure_ascii=False, indent=2))
     return 0
 
@@ -154,7 +162,10 @@ def cmd_capsule(args) -> int:
     from .integrations.capsule_cinema import export_capsule_analysis
 
     b = read_json(Path(args.breakdown))
-    out = export_capsule_analysis(b, Path(args.out) if args.out else Path(args.breakdown).with_name("capsule_analysis.json"))
+    dest = Path(args.out) if args.out else Path(args.breakdown).with_name("capsule_analysis.json")
+    from .output_safety import preflight
+    preflight([dest], force=args.force)
+    out = export_capsule_analysis(b, dest)
     print(out)
     return 0
 
@@ -174,6 +185,8 @@ def cmd_remake_plan(args) -> int:
 
     bdir = Path(args.breakdown).parent
     root = _capsule_root(args)
+    from .output_safety import preflight
+    preflight([bdir / "remake" / "jobs.json"], force=args.force)
     jobs = build_remake_jobs(read_json(Path(args.breakdown)), bdir, capsule_root=root,
                              engine=args.engine,  # None: keep the engine chosen at decompose time
                              mode=args.mode, labels=args.labels.split(",") if args.labels else None)
@@ -203,6 +216,7 @@ def cmd_remake_run(args) -> int:
     argv = ["--jobs", str(jobs), "--capsule-root", str(root)] + (["--only", args.only] if args.only else []) + (["--dry-run"] if args.dry_run else [])
     # 试跑不调用 capsule-cinema，用当前解释器即可
     python = sys.executable if args.dry_run and not args.python else _capsule_python(args.python, root)
+    argv += ["--force"] if args.force else []
     return _run_integration("run_remake.py", python, argv)
 
 
@@ -219,7 +233,7 @@ def cmd_capsule_draft(args) -> int:
 def cmd_assemble(args) -> int:
     from .remake import assemble
 
-    print(assemble(Path(args.breakdown), Path(args.results), Path(args.out) if args.out else None, overlays=args.overlays))
+    print(assemble(Path(args.breakdown), Path(args.results), Path(args.out) if args.out else None, overlays=args.overlays, force=args.force))
     return 0
 
 
@@ -232,8 +246,12 @@ def cmd_tiles(args) -> int:
     from .visual import shot_sheet
 
     info = video_info(args.video)
+    from .output_safety import preflight
     end = args.end if args.end is not None else info.duration
     times = list(np.arange(args.start, end, args.every))[: args.max]
+    count = (len(times) + args.cols - 1) // args.cols
+    outputs = [Path(args.out) if count == 1 else Path(args.out).with_name(f"{Path(args.out).stem}_{r + 1}{Path(args.out).suffix}") for r in range(count)]
+    preflight(outputs, force=args.force)
     import tempfile
 
     frames = []
@@ -392,6 +410,8 @@ def cmd_memory(args) -> int:
     from .memory import export_labels, summary_lines
 
     if args.export_labels:
+        from .output_safety import preflight
+        preflight([Path(args.export_labels)], force=args.force)
         n = export_labels(Path(args.export_labels))
         print(f"已导出 {n} 条视频的纠正到 {args.export_labels}（先把 path 填好，再用 rea-video eval 评测）")
         return 0
@@ -408,6 +428,7 @@ def main(argv: list[str] | None = None) -> int:
     d = sub.add_parser("decompose", help="拆解一条视频")
     d.add_argument("video")
     d.add_argument("-o", "--out")
+    d.add_argument("--force", action="store_true", help="允许替换已有输出")
     d.add_argument("--vlm", action="store_true", help="启用多模态大模型（VLM）看画面逐镜判断；建议开，不开也能跑，只是实拍/AI/3D 的区分更弱")
     d.add_argument("--no-vlm", action="store_true", help="本次不开 VLM（覆盖 prefs 里的 vlm=on）")
     d.add_argument("--no-whole", action="store_true", help="跳过整片结构/文案 VLM 分析")
@@ -424,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("stems", help="只把声音剥离成 原声 / 人声 / 配乐 三条轨")
     st.add_argument("video")
     st.add_argument("-o", "--out")
+    st.add_argument("--force", action="store_true")
     st.set_defaults(func=cmd_stems)
 
     p = sub.add_parser("probe", help="只看容器元数据/来源线索")
@@ -434,6 +456,7 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("eval", help="在带标注的样本集上评测拆解准确率")
     e.add_argument("labels", help="labels.yaml")
     e.add_argument("-o", "--out", default="out/eval")
+    e.add_argument("--force", action="store_true")
     e.add_argument("--vlm", action="store_true")
     e.add_argument("--no-ocr", action="store_true")
     e.add_argument("--ocr-lang", choices=OCR_LANGS, help="同 decompose --ocr-lang")
@@ -445,10 +468,12 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("capsule", help="导出 capsule-cinema 的视频分析 JSON（供生成胶囊草稿）")
     c.add_argument("breakdown")
     c.add_argument("-o", "--out")
+    c.add_argument("--force", action="store_true")
     c.set_defaults(func=cmd_capsule)
 
     r = sub.add_parser("remake-plan", help="为 AI 类镜头生成 capsule-cinema 复刻任务")
     r.add_argument("breakdown")
+    r.add_argument("--force", action="store_true")
     r.add_argument("--capsule-root", help="capsule-cinema 仓库；默认 $CAPSULE_CINEMA_ROOT、prefs capsule_root，再退到 ~/code/github/capsule-cinema")
     r.add_argument("--engine", help="换用另一个视频引擎；默认沿用拆解时的引擎")
     r.add_argument("--mode", default="first_last_frame", choices=["first_last_frame", "image_to_video", "text_to_video"])
@@ -456,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
     r.set_defaults(func=cmd_remake_plan)
 
     rr = sub.add_parser("remake-run", help="用 capsule-cinema 执行 remake-plan 生成的任务（会计费，先 --dry-run）")
+    rr.add_argument("--force", action="store_true")
     rr.add_argument("jobs", help="remake-plan 输出的 jobs.json")
     rr.add_argument("--capsule-root", help="须与 remake-plan 时一致；默认同 remake-plan")
     rr.add_argument("--dry-run", action="store_true", help="只列出任务和参数，不调用模型")
@@ -474,6 +500,7 @@ def main(argv: list[str] | None = None) -> int:
     cd.set_defaults(func=cmd_capsule_draft)
 
     a = sub.add_parser("assemble", help="把复刻结果按原时间线拼回，并输出对比视频")
+    a.add_argument("--force", action="store_true")
     a.add_argument("breakdown")
     a.add_argument("results", help="remake-run 输出的 results.json（或自己写的同格式文件）")
     a.add_argument("-o", "--out")
@@ -482,6 +509,7 @@ def main(argv: list[str] | None = None) -> int:
     a.set_defaults(func=cmd_assemble)
 
     t = sub.add_parser("tiles", help="按时间抽帧拼图，近距离检查某一段（agent 复核用）")
+    t.add_argument("--force", action="store_true")
     t.add_argument("video")
     t.add_argument("--start", type=float, default=0.0)
     t.add_argument("--end", type=float)
@@ -528,6 +556,7 @@ def main(argv: list[str] | None = None) -> int:
 
     me = sub.add_parser("memory", help="看记住了什么：偏好、常见纠正类型；可导出为评测样本")
     me.add_argument("--export-labels", metavar="YAML")
+    me.add_argument("--force", action="store_true")
     me.set_defaults(func=cmd_memory)
 
     for sp in sub.choices.values():  # also accept `rea-video decompose x.mp4 --env-file ...`
@@ -540,6 +569,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return args.func(args)
+    except (FileExistsError, IsADirectoryError, NotADirectoryError, ValueError) as exc:
+        print(f"rea-video: {exc}", file=sys.stderr)
+        return 2
     except MediaError as exc:  # missing ffmpeg / unreadable video: one line, not a traceback
         hint = ""
         if "not found on PATH" in str(exc):

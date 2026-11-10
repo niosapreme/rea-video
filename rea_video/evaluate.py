@@ -186,8 +186,24 @@ def boundary_f1(pred: list[float], gt: list[float], tol: float = 0.1, ignore: li
 
 
 def evaluate(labels_path: Path, out: Path, use_vlm: bool = False, ocr: bool = True, reuse: bool = True, only: set[str] | None = None,
-             stems: bool = False) -> dict:
+             stems: bool = False, force: bool = False) -> dict:
     spec = yaml.safe_load(labels_path.read_text(encoding="utf-8"))
+    from .output_safety import preflight_tree
+    if out.is_symlink() or (out.exists() and not out.is_dir()):
+        raise ValueError(f"unsafe evaluation output directory: {out}")
+    if out.resolve() in (Path.home().resolve(), Path.cwd().resolve(), Path(out.anchor).resolve()):
+        raise ValueError(f"unsafe evaluation output directory: {out}")
+    for entry in spec["videos"]:
+        if not isinstance(entry["id"], str) or Path(entry["id"]).name != entry["id"] or entry["id"] in ("", ".", ".."):
+            raise ValueError(f"unsafe evaluation id: {entry['id']!r}")
+        source = Path(_expand(entry["path"]))
+        if not source.is_file():
+            continue
+        vout = out / entry["id"]
+        bfile = vout / "breakdown.json"
+        reusable = (not only or entry["id"] not in only) and reuse and bfile.is_file() and (not use_vlm or read_json(bfile)["analysis"]["vlm"].get("used"))
+        if not reusable:
+            preflight_tree(vout, force=force, marker="breakdown.json")
     rows, confusion = [], {g: {p: 0.0 for p in LABELS} for g in LABELS}
     tot_dur = ok_dur = 0.0
     real_tot = real_ok = 0.0
@@ -243,7 +259,7 @@ def evaluate(labels_path: Path, out: Path, use_vlm: bool = False, ocr: bool = Tr
                 b["packaging"] = round_floats(pk)
             b = finalize(b, vout)  # re-classify with the current rules
         else:
-            b = decompose(path, vout, use_vlm=use_vlm, ocr=ocr, whole_vlm=False, stems=stems and bool(entry.get("audio")), memory=False)
+            b = decompose(path, vout, use_vlm=use_vlm, ocr=ocr, whole_vlm=False, stems=stems and bool(entry.get("audio")), memory=False, force=force)
         v_tot = v_ok = 0.0
         m_tot = m_ok = 0.0
         shots = []

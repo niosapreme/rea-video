@@ -221,6 +221,8 @@ def build_remake_jobs(b: dict, bdir: Path, capsule_root: Path, engine: str | Non
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     slug = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(b["source"]["filename"]).stem)[:40]
     run_dir = capsule_root / "output" / f"rea_remake_{slug}_{stamp}"
+    from ..output_safety import preflight_tree
+    preflight_tree(run_dir)
     jobs = []
     for sh in b["shots"]:
         lab = sh["base"]["label"]

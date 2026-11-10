@@ -739,5 +739,7 @@ def write_reports(b: dict, out: Path) -> None:
     from .i18n import set_lang
 
     set_lang(b.get("lang", "zh"))
-    (out / "report.md").write_text(markdown(b), encoding="utf-8")
-    (out / "report.html").write_text(html_report(b), encoding="utf-8")
+    from .output_safety import atomic_text
+    md, html = markdown(b), html_report(b)
+    atomic_text(out / "report.md", md)
+    atomic_text(out / "report.html", html)

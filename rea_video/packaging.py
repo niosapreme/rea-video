@@ -1407,16 +1407,20 @@ def analyze(path: str | Path, info: VideoInfo, cuts: list[float], out_dir: Path 
         d.mkdir(parents=True, exist_ok=True)
         for s in stickers:
             try:
-                p = extract_frame(path, (s["t0"] + s["t1"]) / 2, d / f"{s['id']}_frame.jpg", width=720)
-                img = cv2.imread(str(p))
+                import tempfile
+                with tempfile.TemporaryDirectory(dir=d) as temporary_dir:
+                    p = extract_frame(path, (s["t0"] + s["t1"]) / 2, Path(temporary_dir) / "frame.jpg", width=720)
+                    img = cv2.imread(str(p))
                 if img is not None:
                     H, W = img.shape[:2]
                     x, y, w, h = s["bbox"]
                     crop = img[int(y * H):int((y + h) * H), int(x * W):int((x + w) * W)]
                     if crop.size:
-                        cv2.imwrite(str(d / f"{s['id']}.jpg"), crop)
+                        from .output_safety import staged_media
+                        with staged_media(d / f"{s['id']}.jpg") as temporary:
+                            if not cv2.imwrite(str(temporary), crop):
+                                raise OSError(f"could not write {temporary}")
                         s["image"] = f"packaging/{s['id']}.jpg"
-                p.unlink(missing_ok=True)
             except Exception as exc:  # pragma: no cover
                 LOG.debug("sticker crop failed: %s", exc)
     kinds: dict[str, int] = {}
@@ -1757,15 +1761,15 @@ def finalize_pack(breakdown: dict, out: Path) -> dict | None:
     d.mkdir(parents=True, exist_ok=True)
     srt = to_srt(cues)
     pack["files"] = {}
-    for stale in ("subtitles.srt", "overlays.ass"):  # a re-run with no subtitles must not keep the old export
-        (d / stale).unlink(missing_ok=True)
+    from .output_safety import atomic_text
+    # Existing exports are removed only after all new content has been rendered.
     if srt.strip():
-        (d / "subtitles.srt").write_text(srt, encoding="utf-8")
+        atomic_text(d / "subtitles.srt", srt)
         pack["files"]["srt"] = "packaging/subtitles.srt"
     src = breakdown["source"]
     w, h = (src["height"], src["width"]) if src.get("rotation") in (90, 270) else (src["width"], src["height"])  # as displayed
     if cues:
-        (d / "overlays.ass").write_text(to_ass([c for c in cues if not c.get("part_of_picture")], w, h), encoding="utf-8")
+        atomic_text(d / "overlays.ass", to_ass([c for c in cues if not c.get("part_of_picture")], w, h))
         pack["files"]["ass"] = "packaging/overlays.ass"
     timeline = {"text": [{k: c.get(k) for k in ("id", "kind", "kind_zh", "t0", "t1", "text", "bbox", "style", "style_zh", "anim_in",
                                                  "anim_out", "mid_motion", "follows", "part_of_picture", "anchor", "persistent")} for c in cues],
@@ -1774,5 +1778,9 @@ def finalize_pack(breakdown: dict, out: Path) -> dict | None:
     from .util import write_json
 
     write_json(d / "timeline.json", timeline)
+    if not srt.strip():
+        (d / "subtitles.srt").unlink(missing_ok=True)
+    if not cues:
+        (d / "overlays.ass").unlink(missing_ok=True)
     pack["files"]["timeline"] = "packaging/timeline.json"
     return pack

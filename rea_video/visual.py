@@ -61,7 +61,9 @@ def shot_sheet(frames: list[np.ndarray], times: list[float], out: Path, n: int =
     for k, c in enumerate(cells):
         sheet.paste(c, (k * cell_w, 0))
     out.parent.mkdir(parents=True, exist_ok=True)
-    sheet.save(out, quality=88)
+    from .output_safety import staged_media
+    with staged_media(out) as temporary:
+        sheet.save(temporary, quality=88)
     return out
 
 
@@ -91,7 +93,9 @@ def storyboard(items: list[tuple[np.ndarray, str, str, float, float]], out: Path
     for k, c in enumerate(cells):
         sheet.paste(c, ((k % cols) * cell_w, (k // cols) * ch))
     out.parent.mkdir(parents=True, exist_ok=True)
-    sheet.save(out, quality=88)
+    from .output_safety import staged_media
+    with staged_media(out) as temporary:
+        sheet.save(temporary, quality=88)
     return out
 
 
@@ -156,5 +160,7 @@ def audio_timeline(audio: dict, sfx: list[dict], cuts: list[float], duration: fl
     for s in range(0, int(duration) + 1, max(1, int(duration // 10) or 1)):
         d.text((x0 + s * sx - 4, h - 18), f"{s}s", fill=(120, 120, 120), font=_font(11))
     out.parent.mkdir(parents=True, exist_ok=True)
-    im.save(out)
+    from .output_safety import staged_media
+    with staged_media(out) as temporary:
+        im.save(temporary)
     return out

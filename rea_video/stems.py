@@ -76,8 +76,10 @@ def load_stereo(path: str | Path) -> np.ndarray | None:
 
 def save_wav(x: np.ndarray, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "f32le", "-ar", str(SR), "-ac", "2", "-i", "-",
-                    "-c:a", "pcm_s16le", str(path)], input=np.clip(x, -1, 1).T.astype(np.float32).tobytes(), check=True)
+    from .output_safety import staged_media
+    with staged_media(path) as temporary:
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "f32le", "-ar", str(SR), "-ac", "2", "-i", "-",
+                        "-c:a", "pcm_s16le", str(temporary)], input=np.clip(x, -1, 1).T.astype(np.float32).tobytes(), check=True)
 
 
 def _stft(x: np.ndarray) -> np.ndarray:
