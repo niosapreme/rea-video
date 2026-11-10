@@ -14,11 +14,14 @@ import copy
 import hashlib
 import json
 import os
+import ipaddress
+import math
 import re
 import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +36,29 @@ class VLMConfig:
     models: list[str]
     timeout: float = 180.0
     media: str = "both"
+    allow_local_http: bool = False
+    max_requests: int = 60
+    max_request_bytes: int = 20_000_000
+    max_retries: int = 1
+
+    def validate(self) -> None:
+        try:
+            u = urlsplit(self.base_url)
+            host = u.hostname
+            port = u.port
+        except ValueError as exc:
+            raise ValueError("invalid VLM endpoint") from exc
+        if u.scheme not in ("http", "https") or not host or u.username or u.password or u.query or u.fragment or any(c.isspace() for c in self.base_url):
+            raise ValueError("invalid VLM endpoint: use an HTTP(S) URL without credentials, query or fragment")
+        local = host.lower() == "localhost"
+        try:
+            local = local or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            pass
+        if u.scheme == "http" and not (local and self.allow_local_http):
+            raise ValueError("plain HTTP VLM endpoint requires loopback host and explicit --vlm-allow-local-http")
+        if not math.isfinite(self.timeout) or self.timeout <= 0 or self.max_requests < 0 or self.max_request_bytes <= 0 or not 0 <= self.max_retries <= 3 or self.media not in ("both", "video", "frames"):
+            raise ValueError("invalid VLM timeout, media scope or request budget")
 
     @classmethod
     def from_env(cls) -> "VLMConfig | None":
@@ -47,14 +73,17 @@ class VLMConfig:
             if cfg is None:
                 cfg = cls(base_url=base, api_key=key, models=models,
                           timeout=float(os.getenv("REA_VLM_TIMEOUT", os.getenv("VIDEO_ANALYSIS_TIMEOUT_SECONDS", "180"))),
-                          media=os.getenv("REA_VLM_MEDIA", "both"))
+                          media=os.getenv("REA_VLM_MEDIA", "both"),
+                          allow_local_http=os.getenv("REA_VLM_ALLOW_LOCAL_HTTP") == "1",
+                          max_requests=int(os.getenv("REA_VLM_MAX_REQUESTS", "60")),
+                          max_request_bytes=int(os.getenv("REA_VLM_MAX_REQUEST_BYTES", "20000000")),
+                          max_retries=int(os.getenv("REA_VLM_MAX_RETRIES", "1")))
             elif prefix != "REA_VLM" and base == cfg.base_url and key == cfg.api_key:
                 cfg.models += [m for m in models if m not in cfg.models]
         return cfg
 
     def describe(self) -> str:
-        host = re.sub(r"^https?://", "", self.base_url).split("/")[0].rsplit("@", 1)[-1]  # 去掉 user:pass@
-        return f"{','.join(self.models)} @ {host}"
+        return f"{','.join(self.models)} @ {urlsplit(self.base_url).hostname or 'invalid'}"
 
 
 SETUP_HINT = ("建议配置 VLM（任意 OpenAI 兼容的多模态模型，如 Gemini / GPT-4o / 豆包 / Qwen-VL）："
@@ -119,16 +148,20 @@ class VLMClient:
     MAX_DEAD_REQUESTS = 2
 
     def __init__(self, cfg: VLMConfig, cache_dir: Path | None = None):
+        cfg.validate()
         self.cfg = cfg
         self.cache_dir = cache_dir
         self.dead_requests = 0
         self.models = list(cfg.models)  # reordered: the last model that answered goes first
         self._lock = threading.Lock()
-        host = re.sub(r"^https?://", "", cfg.base_url).split("/")[0].rsplit("@", 1)[-1].split(":")[0]
-        if cfg.base_url.lower().startswith("http://") and host not in ("localhost", "127.0.0.1", "::1", "[::1]"):
-            LOG.warning("REA_VLM_BASE_URL 不是 https，API key 会明文发送到 %s", host)
+        self.attempted = 0
+        self.successful = 0
+        self.failed = 0
         if cache_dir:
+            if cache_dir.is_symlink():
+                raise ValueError("VLM cache directory must not be a symlink")
             cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_dir.chmod(0o700)
 
     @property
     def gave_up(self) -> bool:
@@ -137,14 +170,19 @@ class VLMClient:
     def _post(self, model: str, content: list[dict], max_tokens: int) -> str:
         body = json.dumps({"model": model, "messages": [{"role": "user", "content": content}],
                            "max_tokens": max_tokens, "temperature": 0.2}).encode()
+        if len(body) > self.cfg.max_request_bytes:
+            raise ValueError("VLM request exceeds REA_VLM_MAX_REQUEST_BYTES")
         req = urllib.request.Request(self.cfg.base_url + "/chat/completions", data=body, method="POST",
                                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.cfg.api_key}"})
-        with urllib.request.urlopen(req, timeout=self.cfg.timeout) as resp:
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                raise ValueError("VLM endpoint redirected")
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=self.cfg.timeout) as resp:
             data = json.loads(resp.read().decode())
         try:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:  # e.g. "choices": [] after a safety block -> try the next model
-            raise ValueError(f"no answer in VLM response: {str(data)[:160]}") from exc
+            raise ValueError("no answer in VLM response") from exc
         if isinstance(content, list):  # some gateways return content parts
             content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
         if not isinstance(content, str) or not content.strip():
@@ -161,23 +199,35 @@ class VLMClient:
             h.update(mime.encode())
             h.update(hashlib.sha1(p.read_bytes()).digest())
         key = h.hexdigest()
-        if self.cache_dir and (self.cache_dir / f"{key}.json").is_file():
-            return json.loads((self.cache_dir / f"{key}.json").read_text(encoding="utf-8"))
+        cache_file = self.cache_dir / f"{key}.json" if self.cache_dir else None
+        if cache_file and cache_file.is_file() and not cache_file.is_symlink():
+            return json.loads(cache_file.read_text(encoding="utf-8"))
         if self.gave_up:
             raise RuntimeError("VLM skipped: service failed on every model for earlier requests")
         content = [{"type": "image_url", "image_url": {"url": _data_uri(p, mime)}} for p, mime in media]
         content.append({"type": "text", "text": prompt})
         last: Exception | None = None
         for model in list(self.models):
-            for attempt in range(2):
+            for attempt in range(self.cfg.max_retries + 1):
+                with self._lock:
+                    if self.attempted >= self.cfg.max_requests:
+                        raise RuntimeError("VLM request budget exhausted")
+                    self.attempted += 1
                 try:
                     t = time.time()
                     text = self._post(model, content, max_tokens)
                     out = parse_json(text)
+                    with self._lock:
+                        self.successful += 1
                     out["_model"] = model
                     out["_seconds"] = round(time.time() - t, 1)
-                    if self.cache_dir:
-                        (self.cache_dir / f"{key}.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+                    if cache_file and not cache_file.is_symlink():
+                        try:
+                            fd = os.open(cache_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                json.dump(out, f, ensure_ascii=False, indent=2)
+                        except OSError:
+                            LOG.warning("VLM cache write failed")
                     self.dead_requests = 0
                     with self._lock:  # shots run in a thread pool
                         if model in self.models and self.models[0] != model:
@@ -186,11 +236,14 @@ class VLMClient:
                     return out
                 except (urllib.error.URLError, TimeoutError, ValueError, KeyError, json.JSONDecodeError) as exc:
                     last = exc
-                    LOG.warning("VLM %s attempt %d failed: %s", model, attempt + 1, str(exc)[:200])
-                    time.sleep(1.5)
+                    with self._lock:
+                        self.failed += 1
+                    LOG.warning("VLM request failed (%s attempt %d): %s", model, attempt + 1, type(exc).__name__)
+                    if attempt < self.cfg.max_retries:
+                        time.sleep(1.5)
         if not isinstance(last, (ValueError, KeyError)):  # transport/server errors, not a bad answer
             self.dead_requests += 1
-        raise RuntimeError(f"all VLM models failed: {last}")
+        raise RuntimeError(f"all VLM models failed: {type(last).__name__ if last else 'unknown'}")
 
 
 SHOT_PROMPT = """你是视频制作逆向工程专家。判断这个镜头的「底层画面」是用什么方式制作的，并给出可复刻的描述。

@@ -43,6 +43,7 @@ def fake_server(monkeypatch):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     monkeypatch.setenv("REA_VLM_BASE_URL", f"http://127.0.0.1:{srv.server_port}/v1")
     monkeypatch.setenv("REA_VLM_API_KEY", "test")
+    monkeypatch.setenv("REA_VLM_ALLOW_LOCAL_HTTP", "1")
     monkeypatch.setenv("REA_VLM_MODEL", "fake-model")
     yield Handler
     srv.shutdown()
@@ -83,6 +84,7 @@ def test_vlm_all_calls_failing_is_reported_as_not_used(media, tmp_path, monkeypa
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     monkeypatch.setenv("REA_VLM_BASE_URL", f"http://127.0.0.1:{srv.server_port}/v1")
     monkeypatch.setenv("REA_VLM_API_KEY", "test")
+    monkeypatch.setenv("REA_VLM_ALLOW_LOCAL_HTTP", "1")
     monkeypatch.setenv("REA_VLM_MODEL", "fake-model")
     monkeypatch.setattr("rea_video.vlm.time.sleep", lambda s: None)
     try:
@@ -127,6 +129,7 @@ def test_vlm_falls_back_and_sticks_to_working_model(media, tmp_path, monkeypatch
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     monkeypatch.setenv("REA_VLM_BASE_URL", f"http://127.0.0.1:{srv.server_port}/v1")
     monkeypatch.setenv("REA_VLM_API_KEY", "test")
+    monkeypatch.setenv("REA_VLM_ALLOW_LOCAL_HTTP", "1")
     monkeypatch.setenv("REA_VLM_MODEL", "down-model,good-model")
     monkeypatch.setattr("rea_video.vlm.time.sleep", lambda s: None)
     try:

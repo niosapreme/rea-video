@@ -87,6 +87,7 @@ def fake_server(monkeypatch):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     monkeypatch.setenv("REA_VLM_BASE_URL", f"http://127.0.0.1:{srv.server_port}/v1")
     monkeypatch.setenv("REA_VLM_API_KEY", "test")
+    monkeypatch.setenv("REA_VLM_ALLOW_LOCAL_HTTP", "1")
     monkeypatch.setenv("REA_VLM_MODEL", "fake-model")
     yield Handler
     srv.shutdown()

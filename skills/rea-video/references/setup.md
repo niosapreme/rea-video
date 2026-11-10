@@ -16,6 +16,10 @@ pip 报 `externally-managed-environment`（Homebrew / 新版 Ubuntu 的系统 Py
 
 ## VLM 配置（建议，不强制）
 
+外部 VLM 只在本次明确传入 `--vlm` 时启用；保存的 `prefs vlm=on` 不再自动上传媒体。默认仅本地分析，`--no-vlm` 可明确关闭。VLM 会向配置的端点发送每镜头最多 12 秒的缩小片段、关键帧及分析提示词；默认还发送整片 480p 片段（可能带音轨），可用 `--no-whole` 关闭。第三方服务的隐私政策适用。分析结果会保存在输出目录的 `vlm_cache/`，删除该目录即可清除；不要将其公开分享。
+
+端点必须是 HTTPS；仅本机 loopback 开发服务可用 `--vlm-allow-local-http`（或 `REA_VLM_ALLOW_LOCAL_HTTP=1`）明确允许 HTTP。局域网 HTTP 和其他协议不可用。`--vlm-max-requests N` / `REA_VLM_MAX_REQUESTS` 限制包括重试、备用模型和帧回退在内的实际请求次数（默认 60）。`REA_VLM_MAX_RETRIES` 默认 1（最多 3），`REA_VLM_TIMEOUT` 默认 180 秒，`REA_VLM_MAX_REQUEST_BYTES` 默认 20000000 字节。超过预算时本地分析继续，VLM 结果标为部分成功或失败。
+
 **VLM（建议配置，不强制）**：VLM 是能看图/看视频的多模态大模型（Gemini、GPT-4o、豆包、Qwen-VL 等）。不开 VLM，工具只靠像素统计、帧率、OCR、元数据判断，照样能跑完、出报告，但**实拍 / AI / 3D 的区分明显变弱**，音效清单也只有信号层的低置信候选。开了 VLM，工具会把每个镜头的短片段和关键帧发给它，再和确定性结果融合。
 
 配置走 OpenAI 兼容接口，按以下顺序读取：

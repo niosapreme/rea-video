@@ -54,14 +54,21 @@ def cmd_decompose(args) -> int:
     from .memory import pref
 
     meta = read_json(Path(args.meta)) if args.meta else None
-    use_vlm = args.vlm or (pref("vlm") == "on" and not args.no_vlm)
+    use_vlm = args.vlm and not args.no_vlm
+    from .vlm import VLMConfig
+    vlm_config = VLMConfig.from_env() if use_vlm else None
+    if vlm_config is not None:
+        if args.vlm_allow_local_http:
+            vlm_config.allow_local_http = True
+        if args.vlm_max_requests is not None:
+            vlm_config.max_requests = args.vlm_max_requests
     stems = not args.no_stems and pref("stems", "on") == "on"
     lang = args.lang or pref("lang", "zh")
     if lang not in LANGS:
         raise SystemExit(f"错误：不支持的报告语言 {lang}（可选：{', '.join(LANGS)}）")
     b = decompose(args.video, out, use_vlm=use_vlm, whole_vlm=not args.no_whole, ocr=not args.no_ocr,
                   workers=args.workers, engine=args.engine or pref("engine", "seedance2.0"), platform_meta=meta, stems=stems,
-                  packaging=not args.no_packaging, lang=lang, force=args.force)
+                  packaging=not args.no_packaging, lang=lang, force=args.force, vlm_config=vlm_config)
     print(json.dumps({"out": str(out), "verdict": b["summary"]["verdict"], "shots": b["summary"]["shots"],
                       "confidence": b["summary"]["confidence"], "vlm": b["summary"]["vlm"],
                       "report": str(out / "report.html")}, ensure_ascii=False, indent=2))
@@ -429,8 +436,10 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("video")
     d.add_argument("-o", "--out")
     d.add_argument("--force", action="store_true", help="允许替换已有输出")
-    d.add_argument("--vlm", action="store_true", help="启用多模态大模型（VLM）看画面逐镜判断；建议开，不开也能跑，只是实拍/AI/3D 的区分更弱")
-    d.add_argument("--no-vlm", action="store_true", help="本次不开 VLM（覆盖 prefs 里的 vlm=on）")
+    d.add_argument("--vlm", action="store_true", help="明确授权向配置的第三方 VLM 发送镜头帧/片段及提示词；第三方隐私政策适用。默认本地分析")
+    d.add_argument("--vlm-allow-local-http", action="store_true", help="允许向 localhost/loopback 的明文 HTTP VLM 发送媒体（仅本地开发）")
+    d.add_argument("--vlm-max-requests", type=int, help="本次最多尝试的外部 VLM HTTP 请求数（含重试/备用模型；默认 60）")
+    d.add_argument("--no-vlm", action="store_true", help="本次不开 VLM（优先于 --vlm）")
     d.add_argument("--no-whole", action="store_true", help="跳过整片结构/文案 VLM 分析")
     d.add_argument("--no-ocr", action="store_true", help="不做 OCR（字幕/花字时间轴也会跳过，只剩贴纸检测）")
     d.add_argument("--ocr-lang", choices=OCR_LANGS, help="字幕/花字的语言：zh 中英（默认）、ja 日文（首次使用自动下载识别模型）；也可用 prefs ocr_lang 设成默认")

@@ -81,7 +81,8 @@ def test_empty_choices_falls_back_to_next_model(monkeypatch):
 
         return R(json.dumps(body).encode())
 
-    monkeypatch.setattr("rea_video.vlm.urllib.request.urlopen", fake_urlopen)
+    from types import SimpleNamespace
+    monkeypatch.setattr("rea_video.vlm.urllib.request.build_opener", lambda *a: SimpleNamespace(open=fake_urlopen))
     monkeypatch.setattr("rea_video.vlm.time.sleep", lambda s: None)
     assert c.ask_json("p", [])["ok"] == 1
     assert calls[-1] == "m2"
