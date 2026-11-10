@@ -224,13 +224,13 @@ def iter_frames(
 def extract_frame(path: str | Path, t: float, out_path: str | Path, width: int | None = None) -> Path:
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    from .output_safety import staged_media
     vf = ["-vf", f"scale={width}:-2"] if width else []
-    out_path.unlink(missing_ok=True)
-    cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{max(t, 0):.4f}", "-i", str(path), "-frames:v", "1", *vf, "-q:v", "2", str(out_path)]
-    if subprocess.run(cmd, capture_output=True).returncode != 0 or not out_path.is_file():
-        # t past the last frame's timestamp (low fps, last shot): take the file's last frame instead
-        cmd = ["ffmpeg", "-v", "error", "-y", "-sseof", "-3", "-i", str(path), "-update", "1", *vf, "-q:v", "2", str(out_path)]
-        subprocess.run(cmd, check=True, capture_output=True)
+    with staged_media(out_path) as temporary:
+        cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{max(t, 0):.4f}", "-i", str(path), "-frames:v", "1", *vf, "-q:v", "2", str(temporary)]
+        if subprocess.run(cmd, capture_output=True).returncode != 0 or temporary.stat().st_size == 0:
+            cmd = ["ffmpeg", "-v", "error", "-y", "-sseof", "-3", "-i", str(path), "-update", "1", *vf, "-q:v", "2", str(temporary)]
+            subprocess.run(cmd, check=True, capture_output=True)
     return out_path
 
 
@@ -238,11 +238,13 @@ def cut_clip(path: str | Path, start: float, duration: float, out_path: str | Pa
              audio: bool = False, crf: int = 28) -> Path:
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{max(start, 0):.4f}", "-i", str(path), "-t", f"{duration:.4f}",
-           "-vf", f"scale={width}:-2", "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p"]
-    cmd += ["-c:a", "aac", "-b:a", "64k"] if audio else ["-an"]
-    cmd += ["-movflags", "+faststart", str(out_path)]
-    subprocess.run(cmd, check=True)
+    from .output_safety import staged_media
+    with staged_media(out_path) as temporary:
+        cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{max(start, 0):.4f}", "-i", str(path), "-t", f"{duration:.4f}",
+               "-vf", f"scale={width}:-2", "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p"]
+        cmd += ["-c:a", "aac", "-b:a", "64k"] if audio else ["-an"]
+        cmd += ["-movflags", "+faststart", str(temporary)]
+        subprocess.run(cmd, check=True)
     return out_path
 
 

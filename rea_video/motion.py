@@ -437,7 +437,10 @@ def element_crops(path: str | Path, info: VideoInfo, start: float, end: float, m
                 continue
             name = f"{sid}_{tag}_{k:02d}.jpg"
             crop = fr[y0:y1, x0:x1]
-            cv2.imwrite(str(out_dir / name), crop, [cv2.IMWRITE_JPEG_QUALITY, 94])
+            from .output_safety import staged_media
+            with staged_media(out_dir / name) as temporary:
+                if not cv2.imwrite(str(temporary), crop, [cv2.IMWRITE_JPEG_QUALITY, 94]):
+                    raise OSError(f"could not write {temporary}")
             if tag == "ly":
                 motion["layer"].setdefault("crops", []).append(f"shots/{name}")
             else:
@@ -472,5 +475,8 @@ def element_crops(path: str | Path, info: VideoInfo, start: float, end: float, m
             sheet[ri * (ch + 26): ri * (ch + 26) + ch + 22, x:x + t.shape[1]] = t
             x += t.shape[1] + 4
     name = f"{sid}_elements.jpg"
-    cv2.imwrite(str(out_dir / name), sheet, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    from .output_safety import staged_media
+    with staged_media(out_dir / name) as temporary:
+        if not cv2.imwrite(str(temporary), sheet, [cv2.IMWRITE_JPEG_QUALITY, 90]):
+            raise OSError(f"could not write {temporary}")
     return f"shots/{name}"

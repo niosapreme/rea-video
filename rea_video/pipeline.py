@@ -64,12 +64,14 @@ def vlm_units(records: list[dict], max_calls: int) -> list[list[dict]]:
 def decompose(video: str | Path, out_dir: str | Path, *, use_vlm: bool = False, whole_vlm: bool = True,
               ocr: bool = True, workers: int = 3, engine: str = "seedance2.0", max_shots_vlm: int = 60,
               platform_meta: dict | None = None, stems: bool = True, memory: bool = True, packaging: bool = True,
-              lang: str = "zh") -> dict:
+              lang: str = "zh", force: bool = False) -> dict:
     lang = set_lang(lang)
     require_tools()
     t0 = time.time()
     video = Path(video).expanduser().resolve()
     out = Path(out_dir).expanduser().resolve()
+    from .output_safety import preflight_tree
+    preflight_tree(out, force=force, marker="breakdown.json")
     (out / "shots").mkdir(parents=True, exist_ok=True)
     info = video_info(video)
     prov = provenance(info)

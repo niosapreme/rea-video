@@ -61,7 +61,7 @@ def test_vlm_fusion_end_to_end(media, tmp_path, fake_server):
     assert kinds[0] == "data:video/mp4" and "data:image/jpeg" in kinds
     # cache hit on second run: no new requests
     n = len(fake_server.seen)
-    decompose(media["code"], tmp_path / "o", use_vlm=True, ocr=False, workers=1, stems=False)
+    decompose(media["code"], tmp_path / "o", use_vlm=True, ocr=False, workers=1, stems=False, force=True)
     assert len(fake_server.seen) == n
 
 

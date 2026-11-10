@@ -50,7 +50,8 @@ def load_prefs() -> dict:
 
 def _save_prefs(prefs: dict) -> None:
     home().mkdir(parents=True, exist_ok=True)
-    (home() / "prefs.json").write_text(json.dumps(prefs, ensure_ascii=False, indent=2), encoding="utf-8")
+    from .output_safety import atomic_text
+    atomic_text(home() / "prefs.json", json.dumps(prefs, ensure_ascii=False, indent=2))
 
 
 def set_pref(key: str, value: str | None) -> dict:
@@ -285,6 +286,7 @@ def export_labels(path: Path) -> int:
             entry["real_material"] = reals
         videos.append(entry)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("# 由 rea-video memory --export-labels 从用户纠正生成；只评纠正过的时间段。path 需要手动填。\n"
-                    + yaml.safe_dump({"videos": videos}, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    from .output_safety import atomic_text
+    atomic_text(path, "# 由 rea-video memory --export-labels 从用户纠正生成；只评纠正过的时间段。path 需要手动填。\n"
+                    + yaml.safe_dump({"videos": videos}, allow_unicode=True, sort_keys=False))
     return len(videos)

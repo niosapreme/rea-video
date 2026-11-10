@@ -36,6 +36,7 @@ def main() -> None:
     ap.add_argument("--only", default="", help="comma-separated shots: 3,5 or shot_003,shot_005")
     ap.add_argument("--capsule-root", required=True)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
     jobs_path = Path(args.jobs).expanduser().resolve()
@@ -57,15 +58,26 @@ def main() -> None:
     if planned != root:
         sys.exit(f"jobs.json 的 capsule_root（{planned}）与 --capsule-root（{root}）不一致；确认来源可信后用 --capsule-root 指定")
     out_root = root / "output"
+    run_dir = Path(spec.get("run_dir") or "").expanduser().resolve()
     for j in spec["jobs"]:
         od = Path(j.get("params", {}).get("output_dir", "")).expanduser().resolve()
         if j.get("executor") == "capsule_cinema" and not od.is_relative_to(out_root):
             sys.exit(f"shot {j.get('shot')}: output_dir 不在 {out_root} 下，拒绝执行")
+        if not args.dry_run and j.get("executor") == "capsule_cinema" and (not run_dir.is_relative_to(out_root) or run_dir == out_root or od.parent != run_dir or not od.name.startswith("shot_")):
+            sys.exit(f"shot {j.get('shot')}: unsafe output_dir or run_dir")
 
     todo = [j for j in spec["jobs"] if j["executor"] == "capsule_cinema" and (not only or j["shot"] in only)]
     if only and not todo:
         have = sorted(j["shot"] for j in spec["jobs"] if j["executor"] == "capsule_cinema")
         sys.exit(f"--only {args.only} 里没有需要生成的镜头；可生成的镜头序号：{have}")
+    from rea_video.output_safety import preflight_tree
+    if not args.dry_run and results_path.is_symlink() or (results_path.exists() and not results_path.is_file()):
+        sys.exit(f"unsafe results path: {results_path}")
+    if not args.dry_run:
+        for j in todo:
+            od = Path(j["params"]["output_dir"])
+            # The external generator writes opaque filenames directly. Never let it replace prior media.
+            preflight_tree(od)
     print(f"{len(todo)} generation job(s); run dir {spec['run_dir']}")
     if args.dry_run:
         for j in todo:
@@ -96,7 +108,8 @@ def main() -> None:
         video = _video_path(res)
         results["results"][str(j["shot"])] = {"id": j["id"], "video": video, "raw": res if not video else None,
                                               "seconds": round(time.time() - t0, 1), "trim_to": j["trim_to"]}
-        results_path.write_text(json.dumps(results, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        from rea_video.output_safety import atomic_text
+        atomic_text(results_path, json.dumps(results, ensure_ascii=False, indent=2, default=str))
         print(f"  -> {video or res}", flush=True)
         if not video:
             failed.append(str(j["shot"]))
