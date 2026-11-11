@@ -42,8 +42,9 @@ The agent installs the CLI, learns the workflow and runs the whole thing. You ne
 ```bash
 brew install ffmpeg            # or: sudo apt install ffmpeg
 git clone https://github.com/JuneYaooo/rea-video && cd rea-video
-bash scripts/install_skill.sh  # installs the CLI (pip, or pipx / a local .venv if pip is blocked) and links the skill into ~/.claude, ~/.codex, ~/.agents
-rea-video --help
+bash scripts/install_skill.sh --dry-run
+bash scripts/install_skill.sh install
+~/.local/bin/rea-video --version
 ```
 
 </details>

@@ -428,6 +428,12 @@ def cmd_memory(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="rea-video", description="逆向拆解视频：逐镜头判断实拍 / AI 生成 / 代码渲染 / 混合，并生成复刻方案")
+    from . import __version__
+    try:
+        from ._build import BUILD_ID
+    except ImportError:
+        BUILD_ID = "development"
+    ap.add_argument("--version", action="version", version=f"rea-video {__version__} ({BUILD_ID})")
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--env-file", help="额外的 .env（例如 capsule-cinema/.env，用于 VLM 配置）")
     sub = ap.add_subparsers(dest="cmd", required=True)
