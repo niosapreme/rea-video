@@ -1,20 +1,28 @@
 # 安装与 VLM 配置
 
-## 安装（一次性）
+## 托管安装
+
+需要 ffmpeg、ffprobe、Python ≥ 3.10。在源码仓库中运行：
 
 ```bash
-pip install "rea-video[ocr] @ git+https://github.com/JuneYaooo/rea-video"   # 需要 ffmpeg；Python ≥ 3.10
-# 或在仓库里：bash scripts/install_skill.sh（装 CLI 并把 skill 链接到各 agent 目录）
-rea-video --help
+bash scripts/install_skill.sh --dry-run
+bash scripts/install_skill.sh install
+~/.local/bin/rea-video --version
+bash scripts/install_skill.sh update
+bash scripts/install_skill.sh rollback
+bash scripts/install_skill.sh uninstall
 ```
 
-pip 报 `externally-managed-environment`（Homebrew / 新版 Ubuntu 的系统 Python）时，不要加 `--break-system-packages`，改用
-`pipx install "rea-video[ocr] @ git+https://github.com/JuneYaooo/rea-video"`，或直接跑 `install_skill.sh`（会自动改用 pipx 或仓库内 `.venv`）。
+`PYTHON_BIN=python3.12` 可选指定解释器。`--dry-run` 可与各动作组合。安装器先检查冲突，再把源码快照复制到 `~/.local/share/rea-video/versions/<version>-<commit>-<architecture>/`，在其中创建独立 Python 环境并验证，最后切换 `current`。命令入口是 `~/.local/bin/rea-video`；请确保 `~/.local/bin` 在 PATH 中。
 
-手动装了 `[ocr]` 时，OCR 依赖会再装一套 `opencv-python`，和 rea-video 用的 `opencv-python-headless` 抢同一个 `cv2` 目录。装完跑一次：
-`pip uninstall -y opencv-python && pip install --force-reinstall --no-deps "opencv-python-headless>=4.8,<5"`（`install_skill.sh` 会自动做）。
+唯一的 skill 正文在 `~/.local/share/rea-video/current/skill/`。安装器为 Claude Code、Codex、通用 agent 分别建立 `~/.claude/skills/rea-video`、`~/.codex/skills/rea-video`、`~/.agents/skills/rea-video` 链接，均指向该正文；不会改 agent 设置文件。已有非安装器拥有的同名文件、目录或链接会导致安装拒绝，请自行检查后处理。
+
+更新失败时旧版继续可用；回滚切换到之前的版本。卸载只删除清单证明由安装器拥有的链接和版本，保留 `~/.rea-video` 中的用户数据。Intel 与 Apple Silicon 各自建立原生环境，不复制虚拟环境；Apple Silicon 尚未在真实机器上验证。
+
+安装器使用 macOS/Linux 的 `fcntl.flock` 非阻塞独占锁；另一个安装操作正在运行时会立即报错。锁文件位于 `~/.local/share/rea-video/.installer.lock`，卸载后也可保留，空闲的旧锁文件不会阻止重新安装。更新时 CLI 和 skill 链接保持不变，只原子切换 `current` 指针。
 
 ## VLM 配置（建议，不强制）
+
 
 外部 VLM 只在本次明确传入 `--vlm` 时启用；保存的 `prefs vlm=on` 不再自动上传媒体。默认仅本地分析，`--no-vlm` 可明确关闭。VLM 会向配置的端点发送每镜头最多 12 秒的缩小片段、关键帧及分析提示词；默认还发送整片 480p 片段（可能带音轨），可用 `--no-whole` 关闭。第三方服务的隐私政策适用。分析结果会保存在输出目录的 `vlm_cache/`，删除该目录即可清除；不要将其公开分享。
 
@@ -37,3 +45,5 @@ pip 报 `externally-managed-environment`（Homebrew / 新版 Ubuntu 的系统 Py
 - 外部 VLM 仍有你替代不了的部分：它能直接看视频片段的运动、听音轨。你只能看静帧、听不了声音时，音效和人声来源照样标"待确认"。
 
 **VLM 是否真的生效，以 `rea-video summary` 的 `VLM:` 一行为准**（也在 `breakdown.json` 的 `analysis.vlm.status`）：`ok` 已生效、`partial` 部分镜头有结果、`failed` 请求了但全部调用失败（例如服务端 503）、`not_configured` 请求了但没找到配置、`off` 没请求。`failed` / `not_configured` 等同没开 VLM，报告里要如实写，不能写"已开 VLM"。
+
+启动时会核对 `current`、清单与版本目录的所有权标记。已验证的活动版本可修复旧清单；清单有效而 `current` 缺失时可恢复指针。无法证明所有权时停止并报告恢复原因，`--dry-run` 不执行恢复。首次安装中断且尚未建立清单时需人工检查，安装器不会认领已有链接。
